@@ -1,0 +1,685 @@
+library(dplyr)
+library(readr)
+library(tibble)
+library(tidyverse)
+library(ggstatsplot)
+library(plotly)
+library(survival)
+library(survminer)
+
+# Sjednoceni pacientu s vice skeny na mean a max
+df <- readr::read_csv("table_bnt_norm.csv")
+
+df_patient <- df %>%
+  group_by(ID) %>%                     # každý pacient zvlášť
+  summarise(
+    bacteria_log_mean  = mean(bacteria_log, na.rm = TRUE),
+    bacteria_log_max   = max(bacteria_log, na.rm = TRUE),
+    necrosis_log_mean  = mean(necrosis_log, na.rm = TRUE),
+    necrosis_log_max   = max(necrosis_log, na.rm = TRUE),
+    bacteria_norm_mean = mean(bacteria_norm, na.rm = TRUE),
+    bacteria_norm_max  = max(bacteria_norm, na.rm = TRUE),
+    necrosis_norm_mean = mean(necrosis_norm, na.rm = TRUE),
+    necrosis_norm_max  = max(necrosis_norm, na.rm = TRUE),
+    n_scenes = n()                     # kolik scén měl pacient
+  )
+
+write_csv(df_patient, "df_patient_summary.csv")
+
+df_patient <- read_csv("df_patient_summary.csv")
+load("clinical_20231113.Rdata")
+
+# Sloupec ID v clinical
+if(!("ID" %in% colnames(clinical))) {
+  clinical <- tibble::rownames_to_column(clinical, var = "ID")
+}
+
+# Formatovani ID
+df_patient <- df_patient %>% mutate(ID = toupper(trimws(ID)))
+clinical   <- clinical   %>% mutate(ID = toupper(trimws(ID)))
+
+# Sjednoceni tabulek clinical a df_patient
+df_merged <- df_patient %>% left_join(clinical, by = "ID")
+
+write_csv(df_merged, "df_ready_for_correlation.csv")
+
+################################################################
+#### BACTERIA VS. GRADE ########################################
+################################################################
+
+df <- readr::read_csv("df_ready_for_correlation.csv")
+
+
+# převést G1/G2/G3 na čísla
+df$grade_num <- as.numeric(factor(df$grade.worse, 
+                                  levels = c("G1", "G2", "G3"),
+                                  ordered = TRUE))
+
+# odstranit NA
+d <- df %>% drop_na(grade_num, bacteria_log_max)
+
+# výběr proměnných
+y <- "bacteria_log_max"   # co bude na ose Y
+x <- "grade_num"              # co bude na ose X (ordinal: stage nebo grade)
+
+d <- df %>% select(ID, all_of(x), all_of(y)) %>% drop_na()
+
+cor.test(d[[x]], d[[y]], method = "spearman")
+
+p <- ggplot(d, aes_string(x = x, y = y, text = "ID")) +
+  geom_jitter(width = 0.2, height = 0, size = 2, alpha = 0.7, color = "blue") +
+  geom_smooth(method = "loess", se = FALSE, color = "red") +
+  theme_classic() +
+  labs(title = paste("Scatter:", y, "vs", x, "(Spearman)"))
+
+plotly::ggplotly(p, tooltip = c("text", "x", "y"))
+
+#################################################
+#### BATERIA LOG MEAN VS. AGE AT DIAGNOSIS ######
+#################################################
+
+df <- readr::read_csv("df_ready_for_correlation.csv")
+
+yvar <- "bacteria_log_mean"    # bakterie
+xvar <- "age.at.dg"            # věk
+
+d <- df %>% select(ID, all_of(xvar), all_of(yvar)) %>% drop_na()
+
+spearman <- cor.test(d[[xvar]], d[[yvar]], method = "spearman")
+spearman
+
+fit <- lm(as.formula(paste0(yvar," ~ ",xvar)), data = d)
+
+p <- ggplot(d, aes_string(x = xvar, y = yvar, text = "ID")) +
+  geom_point(size = 2.5, alpha = 0.8, color = "steelblue") +
+  geom_smooth(method = "lm", color = "red", se = TRUE) +
+  theme_classic(base_size = 13) +
+  labs(
+    x = "Age at diagnosis (years)",
+    y = yvar,
+    title = paste0("Spearman r = ", round(spearman$estimate, 3),
+                   ",  p = ", signif(spearman$p.value, 3))
+  )
+
+ggplotly(p, tooltip = c("text", "x", "y"))
+
+#################################################
+
+df <- readr::read_csv("df_ready_for_correlation.csv")
+
+df$high_bacteria <- df$bacteria_log_max > median(df$bacteria_log_max, na.rm = TRUE)
+table(df$high_bacteria, df$stage)
+fisher.test(df$high_bacteria, df$stage)
+ggplot(df, aes(x = stage, fill = high_bacteria)) +
+  geom_bar(position = "fill") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = "Stage", y = "% pacientů",
+       fill = "High bacteria",
+       title = "Podíl pacientů s vysokým množstvím bakterií podle stage") +
+  theme_classic()
+
+########################################################
+##### high_vs_stage_worse_cat ##########################
+########################################################
+
+# high_vs_stage_worse_cat.R
+
+library(tidyverse)
+
+df <- readr::read_csv("df_ready_for_correlation.csv")
+
+if(! "bacteria_log_max" %in% names(df)) stop("Chybí bacteria_log_max")
+if(! "stage.worse.cat" %in% names(df)) stop("Chybí stage.worse.cat")
+
+# results
+dir.create("results", showWarnings = FALSE)
+
+# high_bacteria podle mediánu
+thr <- median(df$bacteria_log_max, na.rm = TRUE)
+df <- df %>%
+  mutate(high_bacteria = bacteria_log_max > thr,
+         high_bacteria = if_else(high_bacteria, "High", "Low"),
+         high_bacteria = factor(high_bacteria, levels = c("Low","High")))
+
+# kontrola
+table(df$stage.worse.cat, useNA = "ifany")
+
+# tabulka High vs stage.worse.cat
+tab <- table(df$high_bacteria, df$stage.worse.cat, useNA = "ifany")
+print(tab)
+
+# Fisher
+test_result <- NULL
+try({
+  test_result <- fisher.test(tab)
+}, silent = TRUE)
+if(is.null(test_result)) test_result <- chisq.test(tab)
+print(test_result)
+
+write_csv(as_tibble(as.data.frame(tab)), "results/high_vs_stage_worse_cat_table.csv")
+capture.output(test_result, file = "results/high_vs_stage_worse_cat_test.txt")
+
+plot_df <- df %>%
+  filter(!is.na(stage.worse.cat)) %>%
+  group_by(stage.worse.cat) %>%
+  summarise(n = n(),
+            n_high = sum(high_bacteria == "High", na.rm = TRUE)) %>%
+  mutate(pct_high = n_high / n * 100) %>%
+  arrange(stage.worse.cat)
+
+# barplot
+p <- ggplot(plot_df, aes(x = stage.worse.cat, y = pct_high)) +
+  geom_col(fill = "steelblue", alpha = 0.85) +
+  geom_text(aes(label = paste0(round(pct_high,1), "% (n=", n, ")")), vjust = -0.5) +
+  labs(x = "Stage (stage.worse.cat)", y = "% pacientů s high_bacteria",
+       title = "Podíl pacientů s vysokou bakteriální zátěží podle stadia",
+       subtitle = paste0("threshold = median (", round(thr, 3), ")")) +
+  ylim(0, 100) +
+  theme_classic(base_size = 13)
+
+ggsave("results/high_vs_stage_worse_cat_barplot.png", p, width = 8, height = 5, dpi = 300)
+write_csv(plot_df, "results/high_vs_stage_worse_cat_plotdata.csv")
+
+
+
+###########################################################################
+##### high_vs_MSI_barplot #################################################
+###########################################################################
+
+df <- readr::read_csv("df_ready_for_correlation.csv")
+
+# vytvořit složku results, pokud neexistuje
+dir.create("results", showWarnings = FALSE)
+
+# median
+thr <- median(df$bacteria_log_max, na.rm = TRUE)
+
+df <- df %>%
+  mutate(
+    high_bacteria = bacteria_log_max > thr,
+    high_bacteria = if_else(high_bacteria, "High", "Low"),
+    high_bacteria = factor(high_bacteria, levels = c("Low", "High"))
+  )
+
+tab <- table(df$high_bacteria, df$MSI, useNA = "ifany")
+print(tab)
+
+# csv
+write_csv(
+  as_tibble(as.data.frame(tab)),
+  "results/high_vs_MSI_table.csv"
+)
+
+# Fisher 
+test_result <- fisher.test(tab)
+print(test_result)
+
+capture.output(test_result, file = "results/high_vs_MSI_test.txt")
+
+plot_df <- df %>%
+  filter(!is.na(MSI)) %>%
+  group_by(MSI) %>%
+  summarise(
+    n = n(),
+    n_high = sum(high_bacteria == "High")
+  ) %>%
+  mutate(pct_high = 100 * n_high / n)
+
+p <- ggplot(plot_df, aes(x = MSI, y = pct_high)) +
+  geom_col(fill = "steelblue", alpha = 0.85) +
+  geom_text(aes(label = paste0(round(pct_high,1), "% (n=", n, ")")),
+            vjust = -0.5) +
+  ylim(0,100) +
+  labs(
+    title = "Podíl pacientů s vysokou bakteriální zátěží podle MSI statusu",
+    subtitle = paste("threshold = median (", round(thr,3), ")"),
+    x = "MSI status",
+    y = "% High-bacteria"
+  ) +
+  theme_classic(base_size = 13)
+
+ggsave("results/high_vs_MSI_barplot.png", p, width = 7, height = 5, dpi = 300)
+
+##########################################################################
+###### ratio_vs_MSI_barplot ##############################################
+##########################################################################
+
+
+df <- readr::read_csv("df_ready_for_correlation.csv")
+
+dir.create("results", showWarnings = FALSE)
+
+# rozdíl log hodnot = log(bact / necrosis)
+df <- df %>%
+  mutate(
+    ratio_bact_necrosis = bacteria_log_max - necrosis_log_max
+)
+
+summary(df$ratio_bact_necrosis)
+hist(df$ratio_bact_necrosis)
+
+# scatter
+p1 <- ggplot(df, aes(x = necrosis_log_max, y = bacteria_log_max,
+                     color = ratio_bact_necrosis, label = ID)) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_viridis_c(option = "plasma") +
+  theme_classic() +
+  labs(title = "Bacteria vs Necrosis (colored by ratio)",
+       x = "necrosis_log_max",
+       y = "bacteria_log_max",
+       color = "ratio")
+
+ggsave("results/ratio_scatter.png", p1, width = 6, height = 5, dpi = 300)
+
+# high/low
+thr <- median(df$ratio_bact_necrosis, na.rm = TRUE)
+
+df <- df %>%
+  mutate(
+    ratio_high = ratio_bact_necrosis > thr,
+    ratio_high = if_else(ratio_high, "High", "Low")
+  )
+
+tab <- table(df$ratio_high, df$MSI)
+print(tab)
+
+test_result <- fisher.test(tab)
+print(test_result)
+
+write_csv(as_tibble(as.data.frame(tab)),
+          "results/ratio_vs_MSI_table.csv")
+capture.output(test_result,
+               file = "results/ratio_vs_MSI_test.txt")
+
+# barplot ratio high/msi
+plot_df <- df %>%
+  filter(!is.na(MSI)) %>%
+  group_by(MSI) %>%
+  summarise(
+    n = n(),
+    high = sum(ratio_high == "High")
+  ) %>%
+  mutate(pct = 100 * high / n)
+
+p2 <- ggplot(plot_df, aes(x = MSI, y = pct)) +
+  geom_col(fill="steelblue", alpha=0.85) +
+  geom_text(aes(label = paste0(round(pct,1), "% (n=", n, ")")),
+            vjust = -0.5) +
+  ylim(0, 100) +
+  labs(title="High ratio (bacteria/necrosis) vs MSI",
+       subtitle=paste("threshold =", round(thr,3)),
+       y="% High ratio") +
+  theme_classic()
+
+ggsave("results/ratio_vs_MSI_barplot.png", p2, width = 6, height = 5, dpi = 300)
+
+
+
+##################################################################
+####### RFS_ratio_logrank ########################################
+##################################################################
+
+
+df <- readr::read_csv("df_ready_for_correlation.csv")
+
+df <- df %>%
+  mutate(
+    ratio_bact_necrosis = bacteria_log_max - necrosis_log_max
+  )
+
+
+thr <- median(df$ratio_bact_necrosis, na.rm = TRUE)
+
+df <- df %>%
+  mutate(
+    ratio_group = if_else(ratio_bact_necrosis > thr, "High ratio", "Low ratio")
+  )
+
+# uložit info o skupinách
+write_csv(df %>% select(ID, ratio_bact_necrosis, ratio_group),
+          "results/RFS_ratio_groups.csv")
+
+
+surv_obj <- Surv(time = df$rfs.time, event = df$rfs.event)
+
+fit <- survfit(surv_obj ~ ratio_group, data = df)
+
+p <- ggsurvplot(
+  fit,
+  data = df,
+  risk.table = TRUE,
+  pval = TRUE,
+  conf.int = FALSE,
+  palette = c("#1f77b4", "#d62728"),
+  title = "Relaps free survival by ratio (bacteria / necrosis)",
+  xlab = "Days",
+  ylab = "Relapse-free survival",
+  legend.title = "",
+  legend.labs = c("Low ratio", "High ratio")
+)
+
+ggsave("results/RFS_ratio_KMplot.png", p$plot, width = 7, height = 6, dpi = 300)
+
+logrank <- survdiff(surv_obj ~ ratio_group, data = df)
+hr <- logrank$obs[2] / logrank$exp[2]
+
+capture.output(logrank, file = "results/RFS_ratio_logrank.txt")
+capture.output(hr, file = "results/RFS_ratio_HR.txt")
+
+
+table(df$ratio_group, df$rfs.event)
+fisher.test(table(df$ratio_group, df$rfs.event))
+coxph(Surv(rfs.time, rfs.event) ~ ratio_bact_necrosis + age.at.dg + stage.worse.cat, data=df)
+
+########################################################
+###### Ratio_vs_Stage_KW_test ##########################
+########################################################
+
+df <- readr::read_csv("df_ready_for_correlation.csv")
+
+# vytvořit složku results, pokud není
+dir.create("results", showWarnings = FALSE)
+
+df <- df %>%
+  mutate(
+    ratio_bact_necrosis = bacteria_log_max - necrosis_log_max
+  )
+
+stage_var <- "stage.worse.cat"   # I / II / III / IV
+
+d <- df %>% 
+  select(ID, ratio_bact_necrosis, all_of(stage_var)) %>% 
+  drop_na()
+
+p <- ggplot(d, aes_string(x = stage_var, y = "ratio_bact_necrosis")) +
+  geom_boxplot(fill = "lightblue", alpha = 0.6, outlier.shape = NA) +
+  geom_jitter(width = 0.15, size = 2, alpha = 0.8, color = "blue") +
+  theme_classic() +
+  labs(
+    title = "Ratio (bacteria / necrosis) by stadium",
+    x = "Stadium",
+    y = "ratio (log(bacteria) - log(necrosis))"
+  )
+
+ggsave("results/Ratio_vs_Stage_boxplot.png", p, width = 7, height = 5, dpi = 300)
+
+anova_test <- aov(ratio_bact_necrosis ~ get(stage_var), data=d)
+capture.output(summary(anova_test), file="results/Ratio_vs_Stage_ANOVA.txt")
+
+kw_test <- kruskal.test(
+  d$ratio_bact_necrosis ~ d[[stage_var]]
+)
+capture.output(kw_test, file="results/Ratio_vs_Stage_KW_test.txt")
+
+###################################################################
+
+library(tidyverse)
+
+df <- readr::read_csv("df_ready_for_correlation.csv")
+
+dir.create("results", showWarnings = FALSE)
+
+# ratio
+df <- df %>%
+  mutate(
+    ratio_bact_necrosis = bacteria_log_max - necrosis_log_max
+  )
+
+# BRAF proměnna
+# typicky kategorie: "mut", "wt" nebo "1/0"
+braf_var <- "BRAF"
+
+# data bez NA
+d <- df %>%
+  select(ID, ratio_bact_necrosis, all_of(braf_var)) %>%
+  drop_na()
+
+if (is.numeric(d[[braf_var]])) {
+  d[[braf_var]] <- factor(d[[braf_var]], labels = c("WT", "Mut"))
+}
+
+# boxplot + jitter
+p <- ggplot(d, aes_string(x = braf_var, y = "ratio_bact_necrosis")) +
+  geom_boxplot(fill = "lightblue", alpha = 0.6, outlier.shape = NA) +
+  geom_jitter(width = 0.15, size = 2, color = "blue", alpha = 0.8) +
+  theme_classic() +
+  labs(
+    title = "Ratio (bacteria / necrosis) podle BRAF statusu",
+    x = "BRAF",
+    y = "ratio (log(bacteria) - log(necrosis))"
+  )
+
+ggsave("results/Ratio_vs_BRAF_boxplot.png", p, width = 7, height = 5, dpi = 300)
+
+# Kruskal
+kw <- kruskal.test(d$ratio_bact_necrosis ~ d[[braf_var]])
+capture.output(kw, file = "results/Ratio_vs_BRAF_KW.txt")
+
+if (length(unique(d[[braf_var]])) == 2) {
+  wilc <- wilcox.test(d$ratio_bact_necrosis ~ d[[braf_var]])
+  capture.output(wilc, file = "results/Ratio_vs_BRAF_Wilcoxon.txt")
+}
+
+##################################################################
+###### RFS_spread_logrank ########################################
+##################################################################
+
+df <- readr::read_csv("df_ready_for_correlation.csv")
+
+# vytvořit results/
+dir.create("results", showWarnings = FALSE)
+
+df <- df %>%
+  mutate(
+    spread = bacteria_log_max - bacteria_log_mean
+  )
+
+#vysoký / nízký spread podle mediánu
+thr_spread <- median(df$spread, na.rm = TRUE)
+
+df <- df %>%
+  mutate(
+    spread_group = if_else(spread > thr_spread, 
+                           "High spread", 
+                           "Low spread")
+  )
+
+#  uložit hodnoty do CSV
+write_csv(df %>% select(ID, spread, spread_group),
+          "results/spread_groups.csv")
+
+# survival objekt
+surv_obj <- Surv(time = df$rfs.time, event = df$rfs.event)
+
+# Kaplan–Meier
+fit <- survfit(surv_obj ~ spread_group, data = df)
+
+# graf
+p <- ggsurvplot(
+  fit,
+  data = df,
+  risk.table = TRUE,
+  pval = TRUE,
+  conf.int = FALSE,
+  palette = c("#1f77b4", "#d62728"),
+  title = "RFS podle bacterial hotspot spread",
+  xlab = "Days",
+  ylab = "Relapse-free survival",
+  legend.title = "",
+  legend.labs = c("Low spread", "High spread")
+)
+
+ggsave("results/RFS_spread_KMplot.png", p$plot, width = 7, height = 6, dpi = 300)
+
+# log-rank test
+logrank <- survdiff(surv_obj ~ spread_group, data = df)
+capture.output(logrank, file = "results/RFS_spread_logrank.txt")
+
+# hazard ratio
+hr <- logrank$obs[2] / logrank$exp[2]
+capture.output(hr, file = "results/RFS_spread_HR.txt")
+
+
+################################################################
+#### BBACTERIAL LOAD BY MSI STATUS #############################
+################################################################
+
+
+df <- readr::read_csv("df_ready_for_correlation.csv") # načtení dat
+dir.create("results", showWarnings = FALSE) 
+
+df <- df %>% 
+  filter(!is.na(MSI), !is.na(bacteria_log_max)) # výběr dvou proměnných
+
+# mann-Whitney test
+pval <- wilcox.test(bacteria_log_max ~ MSI, data=df)$p.value
+p_label <- paste0("Mann–Whitney test: p = ", signif(pval, 3))
+
+# plot
+p <- ggplot(df, aes(x = MSI, y = bacteria_log_max)) +
+  geom_violin(width = 0.6, fill = NA, color = "black", linewidth = 1.1) +   # užší tvar
+  geom_boxplot(width = 0.15, outlier.shape = NA, fill = "white") +
+  geom_jitter(aes(color = MSI), width = 0.12, size = 2, alpha = 0.8, show.legend = FALSE) +
+  stat_summary(fun = "mean", geom = "point", size = 4, color = "darkred") +
+  labs(
+    title = "Bacterial Load by MSI Status",
+    subtitle = p_label,
+    x = "MSI Status",
+    y = "bacteria_log_max"
+  ) +
+  scale_x_discrete(labels = c("MSI\n(n = 6)", "MSS\n(n = 33)")) +
+  theme_classic(base_size = 15)
+
+ggsave("results/MSI_bacteria_clean_fixed.png", p, width = 8, height = 6, dpi = 300)
+
+p
+#######################################################################
+#### RATIO VS. MSI ####################################################
+#######################################################################
+library(tidyverse)
+library(ggstatsplot)
+
+df <- readr::read_csv("df_ready_for_correlation.csv")
+
+dir.create("results", showWarnings = FALSE)
+
+# ratio
+df <- df %>%
+  mutate(ratio_bact_necrosis = bacteria_log_max - necrosis_log_max)
+
+# odstranit NA
+d <- df %>% filter(!is.na(MSI), !is.na(ratio_bact_necrosis))
+
+# Wilcoxon p-hodnota
+pval <- wilcox.test(ratio_bact_necrosis ~ MSI, data = d)$p.value
+p_label <- paste0("Wilcoxon test: p = ", signif(pval, 3))
+
+# n pod osou X
+counts <- d %>% count(MSI) %>% mutate(label = paste0(MSI, "\n(n = ", n, ")"))
+lab_vec <- set_names(counts$label, counts$MSI)
+
+# violin + boxplot + jitter
+p <- ggplot(d, aes(x = MSI, y = ratio_bact_necrosis)) +
+  geom_violin(width = 0.6, fill = NA, color = "black", linewidth = 1.1) +
+  geom_boxplot(width = 0.15, outlier.shape = NA, fill = "white") +
+  geom_jitter(width = 0.12, size = 2, alpha = 0.8, aes(color = MSI), show.legend = FALSE) +
+  stat_summary(fun = "mean", geom = "point", size = 4, color = "darkred") +
+  labs(
+    title = "Ratio (bacteria / necrosis) by MSI status",
+    subtitle = p_label,
+    x = "MSI status",
+    y = "ratio_bact_necrosis"
+  ) +
+  scale_x_discrete(labels = lab_vec) +
+  scale_color_manual(values = c("MSI"="#66c2a5","MSS"="#f4a582")) +
+  theme_classic(base_size = 15)
+
+ggsave("results/ratio_vs_MSI_violin.png", p, width = 8, height = 6, dpi = 300)
+
+p
+
+################################################################
+##### Ratio (bacteria/necrosis) vs MSI #########################
+################################################################
+
+df <- readr::read_csv("df_ready_for_correlation.csv")
+
+# ratio
+df <- df %>%
+  mutate(
+    ratio_bact_necrosis = bacteria_log_max - necrosis_log_max
+  ) %>%
+  filter(!is.na(MSI), !is.na(ratio_bact_necrosis))
+
+# slozka results
+dir.create("results", showWarnings = FALSE)
+
+# VIOLIN + BOXPLOT + JITTER + WILCOX TEST
+p <- ggbetweenstats(
+  data = df,
+  x = MSI,
+  y = ratio_bact_necrosis,
+  type = "nonparametric",          # Wilcoxon
+  messages = FALSE,
+  results.subtitle = TRUE,
+  pairwise.comparisons = FALSE,
+  pairwise.display = "none",
+  mean.point.args = list(size = 4, color = "red"),
+  ggplot.component = list(
+    scale_y_continuous(expand = expansion(mult = c(0.05, 0.1))),
+    theme_classic(base_size = 14)
+  )
+)
+
+ggsave("results/ratio_vs_MSI_violin_boxplot.png",
+       p,
+       width = 7, height = 6, dpi = 300)
+
+p
+
+####################################################
+###### bacteria_log_max vs stage.worse.cat #########
+###################################################
+
+# filtr
+plot_df2 <- df %>%
+  filter(!is.na(stage.worse.cat), !is.na(bacteria_log_max)) %>%
+  mutate(stage.worse.cat = factor(stage.worse.cat, levels = sort(unique(stage.worse.cat))))
+
+# Kruskal-Wallis 
+kw <- kruskal.test(bacteria_log_max ~ stage.worse.cat, data = plot_df2)
+kw_p <- signif(kw$p.value, 3)
+
+capture.output(kw, file = "results/kw_test_bacteria_by_stage.txt")
+
+summary_table <- plot_df2 %>%
+  group_by(stage.worse.cat) %>%
+  summarise(
+    n = n(),
+    median = median(bacteria_log_max, na.rm = TRUE),
+    q1 = quantile(bacteria_log_max, 0.25, na.rm = TRUE),
+    q3 = quantile(bacteria_log_max, 0.75, na.rm = TRUE),
+    mean = mean(bacteria_log_max, na.rm = TRUE),
+    sd = sd(bacteria_log_max, na.rm = TRUE)
+  )
+write_csv(summary_table, "results/bacteria_by_stage_summary.csv")
+
+# violin + boxplot + jitter
+p_box <- ggplot(plot_df2, aes(x = stage.worse.cat, y = bacteria_log_max)) +
+  geom_violin(width = 0.6, fill = NA, color = "black", linewidth = 1) +
+  geom_boxplot(width = 0.14, outlier.shape = NA, fill = "white") +
+  geom_jitter(width = 0.12, size = 2, alpha = 0.8, aes(color = stage.worse.cat), show.legend = FALSE) +
+  stat_summary(fun = "mean", geom = "point", color = "darkred", size = 3) +
+  labs(
+    title = "Bacterial load (bacteria_log_max) by stage",
+    subtitle = paste0("Kruskal-Wallis p = ", kw_p),
+    x = "Stage (stage.worse.cat)",
+    y = "bacteria_log_max"
+  ) +
+  theme_classic(base_size = 14)
+
+ggsave("results/bacteria_by_stage_violin_boxplot.png", p_box, width = 9, height = 6, dpi = 300)
+
+print(summary_table)
+
+  
