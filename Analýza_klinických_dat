@@ -7,7 +7,9 @@ library(plotly)
 library(survival)
 library(survminer)
 
-# Sjednoceni pacientu s vice skeny na mean a max
+# Někteří pacienti mají více histologických skenů. 
+# V této části je výpočet mean a max bakteriální zátěže a nekrozy pro jednotlice.
+
 df <- readr::read_csv("table_bnt_norm.csv")
 
 df_patient <- df %>%
@@ -23,6 +25,8 @@ df_patient <- df %>%
     necrosis_norm_max  = max(necrosis_norm, na.rm = TRUE),
     n_scenes = n()                     # kolik scén měl pacient
   )
+
+# Spojení sjednocených hodnot na pacienta s klinickými daty, spojení dat podle ID pro další zpracování.
 
 write_csv(df_patient, "df_patient_summary.csv")
 
@@ -46,6 +50,8 @@ write_csv(df_merged, "df_ready_for_correlation.csv")
 ################################################################
 #### BACTERIA VS. GRADE ########################################
 ################################################################
+
+# Testování vztahu mezi max bakteriální zátěží a stupněm nádoru.
 
 df <- readr::read_csv("df_ready_for_correlation.csv")
 
@@ -78,6 +84,8 @@ plotly::ggplotly(p, tooltip = c("text", "x", "y"))
 #### BATERIA LOG MEAN VS. AGE AT DIAGNOSIS ######
 #################################################
 
+# Testování vztahu mezi průměrnou bakteriální náloží a věkem při diagnoze.
+
 df <- readr::read_csv("df_ready_for_correlation.csv")
 
 yvar <- "bacteria_log_mean"    # bakterie
@@ -104,6 +112,10 @@ p <- ggplot(d, aes_string(x = xvar, y = yvar, text = "ID")) +
 ggplotly(p, tooltip = c("text", "x", "y"))
 
 #################################################
+#### HIGH BACTERIA VS. TUMOR STAGE ##############
+#################################################
+
+# Rozdělení pacientů dle mediánu bakterií. Testování vztahu mezi vysokou bakteriální náloží a stadiem nádoru.
 
 df <- readr::read_csv("df_ready_for_correlation.csv")
 
@@ -121,6 +133,8 @@ ggplot(df, aes(x = stage, fill = high_bacteria)) +
 ########################################################
 ##### high_vs_stage_worse_cat ##########################
 ########################################################
+
+# Testování vztahu mezi bacteria_log_max a kategorií stadia nádoru.
 
 # high_vs_stage_worse_cat.R
 
@@ -186,6 +200,8 @@ write_csv(plot_df, "results/high_vs_stage_worse_cat_plotdata.csv")
 ##### high_vs_MSI_barplot #################################################
 ###########################################################################
 
+# Analyzování vztahu mezi vysokou bakteriální náloží a MSI statusem.
+
 df <- readr::read_csv("df_ready_for_correlation.csv")
 
 # vytvořit složku results, pokud neexistuje
@@ -244,6 +260,7 @@ ggsave("results/high_vs_MSI_barplot.png", p, width = 7, height = 5, dpi = 300)
 ###### ratio_vs_MSI_barplot ##############################################
 ##########################################################################
 
+# Poměr mezi bakteriální náloží ku nekroze a MSI statusem pacienta.
 
 df <- readr::read_csv("df_ready_for_correlation.csv")
 
@@ -319,6 +336,8 @@ ggsave("results/ratio_vs_MSI_barplot.png", p2, width = 6, height = 5, dpi = 300)
 ####### RFS_ratio_logrank ########################################
 ##################################################################
 
+# Testování vytvořeného poměru bakteriální nálož/nekroza vůči relaps free survival.
+
 
 df <- readr::read_csv("df_ready_for_correlation.csv")
 
@@ -375,6 +394,8 @@ coxph(Surv(rfs.time, rfs.event) ~ ratio_bact_necrosis + age.at.dg + stage.worse.
 ###### Ratio_vs_Stage_KW_test ##########################
 ########################################################
 
+# Testování vztahu poměru bakteriální nálož/nekroza se stadiem nadoru.
+
 df <- readr::read_csv("df_ready_for_correlation.csv")
 
 # vytvořit složku results, pokud není
@@ -412,8 +433,10 @@ kw_test <- kruskal.test(
 capture.output(kw_test, file="results/Ratio_vs_Stage_KW_test.txt")
 
 ###################################################################
+###### RATIO (BACTERIA / NECROSIS) VS BRAF STATUS #################
+###################################################################
 
-library(tidyverse)
+# Testování vztahu mezi poměrem bakterialní naloz/nekroza s BRAF satusem.
 
 df <- readr::read_csv("df_ready_for_correlation.csv")
 
@@ -463,6 +486,8 @@ if (length(unique(d[[braf_var]])) == 2) {
 ##################################################################
 ###### RFS_spread_logrank ########################################
 ##################################################################
+
+# Analýza vztahu mezi různorodostí distribuce bakteriální nálože a Relaps Free Survival.
 
 df <- readr::read_csv("df_ready_for_correlation.csv")
 
@@ -521,8 +546,10 @@ capture.output(hr, file = "results/RFS_spread_HR.txt")
 
 
 ################################################################
-#### BBACTERIAL LOAD BY MSI STATUS #############################
+#### BACTERIAL LOAD BY MSI STATUS #############################
 ################################################################
+
+# Analýza rozdílu v bakteriální náloži v nádorové tkáni mezi MSI a MSS tumory.
 
 
 df <- readr::read_csv("df_ready_for_correlation.csv") # načtení dat
@@ -556,8 +583,8 @@ p
 #######################################################################
 #### RATIO VS. MSI ####################################################
 #######################################################################
-library(tidyverse)
-library(ggstatsplot)
+
+# Analýza rozdílu poměru bakteriální nálože/nekroza mezi MSI a MSS statusem.
 
 df <- readr::read_csv("df_ready_for_correlation.csv")
 
@@ -602,6 +629,8 @@ p
 ##### Ratio (bacteria/necrosis) vs MSI #########################
 ################################################################
 
+# Tento skript porovnává poměr bakteriální nálože a nekrózy mezi MSI a MSS tumory pomocí funkce ggbetweenstats.
+
 df <- readr::read_csv("df_ready_for_correlation.csv")
 
 # ratio
@@ -640,6 +669,8 @@ p
 ####################################################
 ###### bacteria_log_max vs stage.worse.cat #########
 ###################################################
+
+# Analýza vztahu mezi max bakteriální náloží a klinickým stadiem nádoru def. proměnou stage.worse.cat
 
 # filtr
 plot_df2 <- df %>%
